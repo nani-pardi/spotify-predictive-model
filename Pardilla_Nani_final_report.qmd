@@ -1,0 +1,334 @@
+---
+title: "Predicting the Popularity of Songs on Spotify"
+subtitle: |
+  | Final Project 
+  | Foundations of Data Science with R (STAT 359)
+author: "Nani Pardilla"
+date: today
+
+format:
+  html:
+    toc: true
+    embed-resources: true
+    
+execute:
+  echo: false
+  warning: false
+
+from: markdown+emoji 
+reference-location: margin
+citation-location: margin
+---
+
+::: {.callout-tip icon=false}
+
+## Github Repo Link
+[Link to GitHub Repo](https://github.com/STAT359-2024SU/359-final-project-nani-pardi.git)
+:::
+```{r}
+#| echo: false
+# Load Packages
+library(tidyverse)
+library(tidymodels)
+library(here)
+library(recipes)
+library(naniar)
+library(kknn)
+library(doParallel)
+library(knitr)
+
+# set seed
+set.seed(219)
+
+# Load in data
+load(here("data/spotify_train.rda"))
+load(here("data/spotify_test.rda"))
+load(here("data/spotify_folds.rda"))
+load(here("results/fit_logistic.rda"))
+load(here("results/tune_knn.rda"))
+load(here("results/tune_rf_1000.rda"))
+load(here("results/rf_final_fit.rda"))
+load(here("data/spotify_valid.rda"))
+```
+
+## Introduction
+
+### Objective
+The objective of my final project was to create the best model to predict
+if a song would be popular on Spotify.
+
+### Motivation
+My motivation behind this project stems both from a personal curiosity and desire to know the secrets to a hit song; as well hope to find a pattern or recipe to creating a successful song. While music taste is often considered to be subjective, there are popularly agreed upon music hits and flops. Additionally, I have some personal relation to this project because my brother makes music and is trying to gain a following.
+
+### Data Source
+I retrieved my dataset from Kaggle. The original dataset features 32,833 observations and 23 variables. However, I took a random sample of 10,000 observations to run my model. I stratified my random sample by my response variable, in order to equal proportions. I did this to improve the accuracy of my model. 
+
+## Data Overview
+My response variable is track_popularity, which is a measure of whether or not a song was deemed popular on Spotify. This was determined by the original variable track_popularity which featured values from 0 to 100 determining the popularity of a song. I then categorized that into a factor with two levels, popular and not popular. I then grabbed the a portion of the data through stratifying. 
+
+|            |Track Popularity|
+|:-----------|---------------:|
+|Not popular |            5000|
+|Popular     |            5000|
+
+Due to how I grabbed my data, I had equal proportions of both responses. I had 5,000 "popular" songs and 5,000 "not popular" songs. This can be seen in below. It is important to have relatively balanced target variable to improve the model. Had a grabbed an unequal proportion it might have led to a bias towards the majority class, which hinders my overall model's performance.
+
+```{r}
+#| echo: false
+spotify_data_og <- read_csv(here("data/spotify_songs.csv")) |>
+  janitor :: clean_names()
+
+# Check for missingness in data
+#kable(miss_var_summary(spotify_data_og))
+
+# Remove entries with missing data
+clean_spotify_data <- na.omit(spotify_data_og)
+
+# Recheck for missingness
+#kable(miss_var_summary(clean_spotify_data))
+
+# Turn valence into a factor
+vfact <- cut(clean_spotify_data$valence, 3)
+vfact <- fct_recode(vfact, 
+                    "Low" = "(-0.000991,0.33]",
+                    "Medium" = "(0.33,0.661]",
+                    "High" = "(0.661,0.992]")
+
+# turn danceability into a factor
+dfact <- cut(clean_spotify_data$danceability, 3)
+dfact <- fct_recode(vfact, 
+                    "Low" = "(-0.000983,0.328]",
+                    "Medium" = "(0.328,0.655]",
+                    "High" = "(0.655,0.984]")
+
+lfact <- cut(clean_spotify_data$liveness, 3)
+lfact <- fct_recode(lfact, 
+                    "Low" = "(-0.000996,0.332]",
+                    "Medium" = "(0.332,0.664]",
+                    "High" = "(0.664,0.997]")
+
+popular <- cut(clean_spotify_data$track_popularity, 2)
+popular <- fct_recode(popular,
+           "Not popular" = "(-0.1,50]",
+           "Popular" = "(50,100]")
+
+# Apply changes to dataset
+clean_spotify_data <- clean_spotify_data |>
+  mutate(track_popularity = popular,
+         mode = factor(mode),
+         playlist_genre = factor(playlist_genre),
+         playlist_subgenre = factor(playlist_subgenre),
+         playlist_name = factor(playlist_name),
+         valence = vfact,
+         danceability = dfact,
+         liveness = lfact,
+         track_album_release_date =  ymd(track_album_release_date))
+
+# Remove any NA's again
+#kable(miss_var_summary(clean_spotify_data))
+clean_spotify_data <- na.omit(clean_spotify_data)
+
+# Look at the dataset to check for skewness in target variable
+#kable(summary(clean_spotify_data))
+
+# The track popularity 
+spotify_data <- clean_spotify_data |>
+  group_by(track_popularity) |>
+  slice_sample(n = 5000) |>
+  ungroup()
+
+```
+
+```{r}
+#| echo: false
+#| label: "Graph showing distribution of Song Popularity"
+#| fig-cap: "Distribution"
+ggplot(spotify_data, aes(x = track_popularity, color = "pink")) +
+  labs(title = "Distribution of the Data Set") +
+  geom_bar() +
+  theme_minimal()
+```
+
+
+
+## Explorations
+
+When using my data, I conducted an initial validation split. I divided the data into 70% training data, 15% testing data and 15% into validation set. 
+
+I then conducted exploratory data analysis on the validation to look at the distribution of the predictor variables. 
+
+As you can see from the following graphs, several of the predictor variables were incredibly skewed. The variables that suffered the most were "acousticness", "speechiness", and "intrumentalness".
+
+To help these predictors I applied a log transformation to them in the recipe, and that can be visualized in the following plot. It is not wise to leave such skewed variable in because skewed predictor variables can be problematic because they can make models less accurate and harder to interpret. 
+
+Since many models assume that data is normally distributed, skewed data can lead to biased predictions or unstable results. For models that use distance measures or gradient-based methods, skewness can affect how well they learn and predict. Additionally, skewed features can distort feature importance and make it difficult to visualize and understand the data. To address these issues, it's often helpful to transform skewed variables to make the data more balanced and improve model performance.
+
+Below shows an example of one of these skewed variables, and the graph under it shows the same variable under a predictor.
+
+```{r}
+#| echo: false
+#| label: fig-density-plot
+#| fig-cap: "Plots of Speechiness"
+# Right skewed Plot
+ggplot(spotify_valid, aes(x = speechiness)) +
+  geom_density() +
+  labs(title = "Distribution of Speechiness")
+
+# Log Transformation applied
+ggplot(spotify_valid, aes(x = log10(speechiness))) +
+  geom_density() + 
+  labs(title = "Distribution under a Log Transformation")
+```
+
+The following graphs featured other predictor variables that had un-normal distributions; however, not skewed enough to require log or other tranformations.
+```{r}
+#| echo: false
+#| label: fig-density-plots-2
+#| fig-cap: "Plot of Energy, Plot of Loudness"
+ggplot(spotify_valid, aes(x = energy)) +
+  geom_density()
+
+ggplot(spotify_valid, aes(x = loudness)) +
+  geom_density()
+```
+### Factor variables
+In addition to the changes I added in the sink recipe, prior to this I changed certain predictor variables to factors. Firstly, I did this to add complexity to my model. Prior the majority of variables were unusable character variables or numeric variables rated from 0 to 1. To solve this issue I converted, liveness, valence, and dacneability into factor variables with three levels. The three levels I created where high, medium, and low. The following table shows an example of the converted variable.
+
+|       |Dance|
+|:------|----:|
+|Low    | 2571|
+|Medium | 4538|
+|High   | 2891|
+
+In addition to this I alaso converted mode, playlist_genre, and playlist_subgenre into factor variables.
+
+Having factor variables is important in a model because it can find meaningful groupings and allow for easier interpretation.
+
+
+### Date
+
+Additionally, I converted the date from a character variable into a proper date using ymd(), (a lubridate function). Although I did end removing date from recipe and not using it as a predictor variable, changing it was an important part of the data cleaning process. 
+
+## Modeling Methods
+
+### Data Splitting
+
+The dataset was initially divided into three subsets: 70% for training, 15% for validation, and 15% for testing. The training set was further subjected to resampling using a cross-validation approach with 5 folds and 3 repeats. During this process, track popularity was used as a stratification variable to ensure that each fold was representative of the overall distribution of the target variable.
+
+### Prediction Problem Type
+The problem is a logistic regression problem, aimed at predicting the popularity of a song on Spotify. This is a binary classification task where the goal is to classify songs into popular or not popular categories based on various features.
+
+
+### Resampling Technique:
+For my resampling technique, I employed cross-validation with 5 folds and 3 repeats. Cross-validation is a robust method for evaluating model performance and provides a more comprehensive assessment than a simple train-test split. Here’s a detailed breakdown of why this approach is beneficial:
+
+Cross-Validation Overview: In cross-validation, the dataset is divided into several subsets, or "folds." For each iteration, the model is trained on a combination of these folds and tested on the remaining fold. This process is repeated for each fold, ensuring that every data point gets a chance to be in the training set and the test set. For this analysis, I used 5 folds, meaning the data is split into 5 equal parts. The model is trained and evaluated 5 times, with each fold serving as the test set exactly once.
+
+Multiple Repeats: To further increase the reliability of the performance estimates, I used 3 repeats of the cross-validation process. This means the 5-fold cross-validation procedure is executed three times, each with different random splits of the data. This approach helps mitigate any variability that might arise from a single partitioning of the data and provides a more stable estimate of model performance.
+
+Consistency and Reliability: By employing this technique, the model's performance is evaluated on multiple subsets of the data, rather than just a single train-test split. This helps ensure that the model's performance is not overly dependent on a particular subset of the data and provides a more robust measure of how the model generalizes to new, unseen data. It reduces the likelihood that the model's performance is a result of a particularly favorable or unfavorable split.
+
+Error Estimation: The use of cross-validation with multiple repeats also provides a more accurate estimate of model error. The performance metrics obtained from each fold and repeat can be averaged to get a more reliable estimate of the model's performance, such as accuracy or other relevant metrics. This approach helps identify models that consistently perform well and are less likely to overfit to the training data.
+
+
+### Model types
+In my project I wil be fitting three different models, logistic regression, k - nearest neighbor model, and a random forest model. 
+
+For the knn model and the random forest model I will be tuning the neighbors and min_n() and mtry() respectively. 
+
+For neighbors the range will be from 1 to 20 neighbors. Increasing the number of neighbors helps increase accuracy of the model because it balances bias and variance.
+
+For the mtry() the range is from 1 to 11, because that it approximately 70% of the predictor variables. The grid has five levels, and will produce 25 different models. 
+
+### Recipes
+Two recipes will be used in this project to determine the best model. The first recipe is a sink recipe. A sink recipe uses all predictor variables that a valid to use, meaning it excludes certain variables like ids. Do to what was revealed in the exploratory data analysis, we know that some values need to have log transformations applied to them. In the sink recipe we apply the log transformations to speechiness, acousticness, and instrumentalness.
+
+Additionally because we are going to use this recipe for the knn model it is vital that we normalize and center or variables as well. Centering makes sure that the mean of each feature is 0, which can help in interpreting models and improve algorithm performance.
+
+Normalization scales features to ensure they all contribute equally to the model, which is important for algorithms that are sensitive to the magnitude of features.
+Both steps are often used together to prepare data for models that perform best when features are on a similar scale, and they are particularly important for algorithms that are sensitive to the variance and scale of the input features.
+In addition to applying a log transformation I added an offset of one to prevent any negative values form hindering the process. 
+
+The second recipe used in this project is a tree recipe. Tree recipe's are unique in that you do not need to apply transformations, normalize, or center your variables. I did however still remove unnecasary variables, like idtenfiers, as well as removed zero variance predictors. 
+
+### Metric
+The metric used to pick the most accurate model is accuracy. Since this is a logistic regression problem, the accuracy gives the percent that the model correctly predicted. This is a valuable metric to use because of its simplicity and easy ability to be interpreted. It is a very straightforward and baseline metric. 
+
+## Model Building & Selection
+
+### Metric
+Once again the deciding metric to pick the best moel is accuracy. The model that has the highest accuracy, (closest to 1), will be picked and finalized.
+
+### Table showing the best permorning model
+@tbl-mod-totals.
+
+| Model Type          | Best Parameter     | Accuracy                |
+|---------------------|-------------------:|------------------------:|
+| Logistic regression |                N/A |                    .661 |
+| K-nearest neighbors |        20 neighbors|                    .637 |
+| Random forest       |mtry = 6, min_n = 11|                    .664 |
+
+: Model Training Totals {#tbl-mod-totals .striped .hover}
+
+### Analysis of Tuning Parameters
+
+Analysis: Logistic regression is a linear model that does not require tuning of hyperparameters for the specific implementation used. The accuracy of 0.661 suggests moderate performance. While logistic regression provides a baseline and interpretable model, its performance is typically lower than more complex models in cases where relationships between features are non-linear.
+
+Analysis: The choice of 20 neighbors indicates that the model considered a relatively large number of neighbors for making predictions. In general, a larger number of neighbors can smooth out the predictions but may also lead to less sensitivity to the local structure of the data.KNN can be sensitive to the choice of k. A value of 20 might be too high, potentially averaging over too many instances and losing local patterns in the data. Further exploration with different values of k could be beneficial. Since I used 20 neighbors there were a total of twenty models created and used. 
+
+Analysis: Random Forests perform the best among the models tested, achieving an accuracy of 0.664. The parameters mtry = 6 (number of variables randomly sampled as candidates at each split) and min_n = 11 (minimum number of observations needed at a terminal node) were optimized. Random Forests handle non-linearity and interactions between features well. The selected hyperparameters suggest a balanced trade-off between model complexity and overfitting. Since I used 5 levels, a total of 25 models were created and tested. 
+
+### Final Model Selection
+Winning model: Random Forest model
+Parameters: 1000 trees, mtry = 6, min_n = 11
+
+The Random Forest model demonstrated the highest accuracy of 0.664 among the tested models. Its ability to handle non-linearity and interactions between features likely contributed to its superior performance.
+
+## Final Model Analysis
+
+### Confusion Table
+```{r}
+#| echo: false
+rf_predict <- spotify_test |>
+  select(track_popularity) |>
+  bind_cols(predict(rf_final_fit, spotify_test)) 
+
+accuracy_result <- rf_predict |>
+  accuracy(track_popularity, .pred_class)
+
+kable(accuracy_result, caption = "Model Accuracy", digits = 3)
+
+rf_predict |>
+  conf_mat(track_popularity, .pred_class) |>
+  autoplot(type = "heatmap")
+```
+If you look at the confusion matrix above it reveals the accuracy of the model.
+
+If you look, you will notice there are four categories.
+True Positives, False Positives, True Negatives, and False Negatives.
+There are 512 true positives, this means that the model accurately predicted that 512 songs would be popular and they were actually positive, this can be seen in the bottom right corner.
+There are 233 false positives, this means that the model predicted 233 would be popular but they were not actually.
+Next, there are 518 true negatives, this means the model correctly predicted 518 songs would not be popular and they were not popular.
+Lastly, there are 239 False Negatives, this means that the model said there would be 239 song that would not be popular.
+
+The overall accuracy of this model on the spotify test data is .686. This is a higher accuracy than previously thought. It is higher than the baseline of .661. 
+
+### Effectivity of Model
+
+The Random Forest model performs better than both the baseline model and the other machine learning models we tested. It effectively handles complex relationships between features, which helps it make more accurate predictions. The time and effort spent on tuning this model are well worth it because it improves accuracy and is robust against overfitting. Overall, the Random Forest model is a solid choice for this problem. Future improvements could include additional model tuning, trying different models, or enhancing feature engineering to boost performance even further.
+
+## Conclusion
+
+### Conclusions and Insights
+Model Performance: Among the models tested, the Random Forest model demonstrated the highest accuracy and robustness. It outperformed both the logistic regression and k-nearest neighbors models, indicating that its ability to handle complex interactions and non-linear relationships among features is beneficial for this task.
+
+Importance of Feature Engineering: The transformation and preprocessing steps, including centering, normalizing, and dummy encoding, played a crucial role in improving model performance. Handling skewed predictor variables and converting categorical variables into dummy variables allowed the models to better interpret and utilize the data.
+
+### Future Works
+The dataset I obtained was obviusly from one source only, in the future combining different datasets and taking in different perspectives could prove useful in imporving upon my models. 
+
+## References
+This project could not have taken place without the dataset. The dataset was provided to me from kaggle by user: Ashishak3000. 
+## Data Set
+[Link to Data set]((https://www.kaggle.com/datasets/ashishak3000/spotify-dataset/data))
+
