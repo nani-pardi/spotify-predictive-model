@@ -1,6 +1,3 @@
-## Basic repo setup for final project
-
-Describe project and general structure of repo ...
 Here you will find three folder: data, results, and R scripts.
 
 Data holds the original csv, from where the data was extracted. Additionally it holds the data from the inital_validation_split, as well as the folds. 
