@@ -1,8 +1,7 @@
 ---
 title: "Predicting the Popularity of Songs on Spotify"
 subtitle: |
-  | Final Project 
-  | Foundations of Data Science with R (STAT 359)
+  | 
 author: "Nani Pardilla"
 date: today
 
