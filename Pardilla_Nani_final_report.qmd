@@ -49,7 +49,7 @@ load(here("data/spotify_valid.rda"))
 ## Introduction
 
 ### Objective
-The objective of my final project was to create the best model to predict
+The objective of my project was to create the best model to predict
 if a song would be popular on Spotify.
 
 ### Motivation
