@@ -19,11 +19,7 @@ reference-location: margin
 citation-location: margin
 ---
 
-::: {.callout-tip icon=false}
 
-## Github Repo Link
-[Link to GitHub Repo](https://github.com/STAT359-2024SU/359-final-project-nani-pardi.git)
-:::
 ```{r}
 #| echo: false
 # Load Packages
